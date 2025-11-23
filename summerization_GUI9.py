@@ -14,11 +14,13 @@ import html2text
 import random
 import shutil
 import subprocess
+import os
+import webbrowser
+import tempfile
 
 # --- Backend Standard Library Imports ---
 import requests
 from pathlib import Path
-# CORRECTED: Added urlparse and unquote to the import statement
 from urllib.parse import urljoin, urlparse, unquote
 import yaml # You need to 'pip install pyyaml'
 
@@ -33,6 +35,12 @@ try:
     YT_DLP_AVAILABLE = True
 except ImportError:
     YT_DLP_AVAILABLE = False
+try:
+    import markdown
+    MARKDOWN_AVAILABLE = True
+except ImportError:
+    MARKDOWN_AVAILABLE = False
+
 
 # --- Backend Third-Party Imports ---
 from bs4 import BeautifulSoup
@@ -42,7 +50,7 @@ from langchain_core.output_parsers import StrOutputParser
 import fitz # PyMuPDF, you need 'pip install PyMuPDF'
 import docx # you need 'pip install python-docx'
 
-# --- ADDED: USER_AGENTS constant for the Playwright researcher ---
+# --- USER_AGENTS constant for the Playwright researcher ---
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
@@ -50,9 +58,224 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.3 Safari/605.1.15",
 ]
 
+# --- START: Integrated UI Enhancement Classes ---
 
-# --- Backend Classes (Fully Integrated) ---
+# --- Dark Theme Configuration ---
+DARK_THEME = {
+    'bg': '#1e1e1e',
+    'fg': '#ffffff',
+    'select_bg': '#264f78',
+    'select_fg': '#ffffff',
+    'insert_bg': '#ffffff',
+    'frame_bg': '#2d2d2d',
+    'button_bg': '#404040',
+    'button_fg': '#ffffff',
+    'entry_bg': '#3c3c3c',
+    'entry_fg': '#ffffff',
+    'text_bg': '#1e1e1e',
+    'text_fg': '#d4d4d4',
+    'scrollbar_bg': '#404040',
+    'scrollbar_fg': '#686868',
+    'accent': '#0078d4',
+    'success': '#16c60c',
+    'warning': '#ffcc02',
+    'error': '#e74856',
+    'border': '#404040'
+}
 
+class DarkThemeManager:
+    """Manages dark theme styling for the application"""
+
+    @staticmethod
+    def configure_dark_theme(root):
+        """Configure dark theme for the entire application"""
+        style = ttk.Style()
+        try:
+            style.theme_use('clam')
+        except tk.TclError:
+            pass # Fallback to default if clam is not available
+        
+        style.configure('TFrame', background=DARK_THEME['frame_bg'])
+        style.configure('TLabel', background=DARK_THEME['frame_bg'], foreground=DARK_THEME['fg'])
+        style.configure('TLabelFrame', background=DARK_THEME['frame_bg'], foreground=DARK_THEME['fg'])
+        style.configure('TLabelFrame.Label', background=DARK_THEME['frame_bg'], foreground=DARK_THEME['fg'])
+        style.configure('TButton', background=DARK_THEME['button_bg'], foreground=DARK_THEME['button_fg'], borderwidth=1, focuscolor='none')
+        style.map('TButton', background=[('active', DARK_THEME['accent']), ('pressed', DARK_THEME['select_bg'])])
+        style.configure('Accent.TButton', background=DARK_THEME['accent'], foreground='white', font=('Segoe UI', 9, 'bold'))
+        style.map('Accent.TButton', background=[('active', '#106ebe'), ('pressed', '#005a9e')])
+        style.configure('TEntry', fieldbackground=DARK_THEME['entry_bg'], background=DARK_THEME['entry_bg'], foreground=DARK_THEME['entry_fg'], borderwidth=1, insertcolor=DARK_THEME['insert_bg'])
+        style.configure('TNotebook', background=DARK_THEME['frame_bg'], borderwidth=0)
+        style.configure('TNotebook.Tab', background=DARK_THEME['button_bg'], foreground=DARK_THEME['fg'], padding=[12, 8])
+        style.map('TNotebook.Tab', background=[('selected', DARK_THEME['accent']), ('active', DARK_THEME['select_bg'])])
+        style.configure('TCheckbutton', background=DARK_THEME['frame_bg'], foreground=DARK_THEME['fg'], focuscolor='none')
+        style.configure('TRadiobutton', background=DARK_THEME['frame_bg'], foreground=DARK_THEME['fg'], focuscolor='none')
+        root.configure(bg=DARK_THEME['bg'])
+
+    @staticmethod
+    def configure_text_widget(widget):
+        """Configure text-like widgets with dark theme"""
+        widget.configure(bg=DARK_THEME['text_bg'], fg=DARK_THEME['text_fg'], insertbackground=DARK_THEME['insert_bg'], selectbackground=DARK_THEME['select_bg'], selectforeground=DARK_THEME['select_fg'], relief='flat', borderwidth=1, highlightthickness=1, highlightcolor=DARK_THEME['accent'], highlightbackground=DARK_THEME['border'])
+        widget.tag_configure('error', foreground=DARK_THEME['error'])
+        widget.tag_configure('warning', foreground=DARK_THEME['warning'])
+        widget.tag_configure('success', foreground=DARK_THEME['success'])
+        widget.tag_configure('info', foreground=DARK_THEME['accent'])
+
+class MarkdownPreviewWidget(ttk.Frame):
+    """Enhanced markdown preview widget with dark theme styling"""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.markdown_processor = None
+        if MARKDOWN_AVAILABLE:
+            self.markdown_processor = markdown.Markdown(extensions=['codehilite', 'tables', 'fenced_code', 'toc'])
+        
+        self.create_preview_widgets()
+        self.current_content = ""
+
+    def create_preview_widgets(self):
+        """Create the preview interface"""
+        toolbar = ttk.Frame(self)
+        toolbar.pack(fill=tk.X, pady=(5, 10), padx=5)
+
+        ttk.Button(toolbar, text="🔄 Refresh Preview", command=self.refresh_preview).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(toolbar, text="🌐 Open in Browser", command=self.open_in_browser).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(toolbar, text="💾 Export HTML", command=self.export_html).pack(side=tk.LEFT)
+
+        ttk.Label(toolbar, text="Preview Mode:").pack(side=tk.RIGHT, padx=(10, 5))
+        self.preview_mode = tk.StringVar(value="rendered")
+        ttk.Radiobutton(toolbar, text="Rendered", variable=self.preview_mode, value="rendered", command=self.switch_preview_mode).pack(side=tk.RIGHT, padx=(0, 5))
+        ttk.Radiobutton(toolbar, text="Source", variable=self.preview_mode, value="source", command=self.switch_preview_mode).pack(side=tk.RIGHT)
+        
+        self.create_preview_area()
+        self.show_placeholder()
+
+    def create_preview_area(self):
+        """Create the main preview area"""
+        self.preview_text = scrolledtext.ScrolledText(self, wrap=tk.WORD, font=('Segoe UI', 10), state='disabled', height=20)
+        self.preview_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=(0,5))
+        DarkThemeManager.configure_text_widget(self.preview_text)
+        self.configure_markdown_tags()
+
+    def configure_markdown_tags(self):
+        """Configure text tags for markdown-like rendering"""
+        self.preview_text.tag_configure('h1', font=('Segoe UI', 16, 'bold'), foreground='#4CAF50', spacing1=10, spacing3=5)
+        self.preview_text.tag_configure('h2', font=('Segoe UI', 14, 'bold'), foreground='#2196F3', spacing1=8, spacing3=4)
+        self.preview_text.tag_configure('h3', font=('Segoe UI', 12, 'bold'), foreground='#FF9800', spacing1=6, spacing3=3)
+        self.preview_text.tag_configure('bold', font=('Segoe UI', 10, 'bold'))
+        self.preview_text.tag_configure('italic', font=('Segoe UI', 10, 'italic'))
+        self.preview_text.tag_configure('code_inline', font=('Consolas', 9), background='#2d2d30', foreground='#dcdcaa')
+        self.preview_text.tag_configure('code_block', font=('Consolas', 9), background='#1e1e1e', foreground='#d4d4d4', lmargin1=20, lmargin2=20, spacing1=5, spacing3=5, wrap='none')
+        self.preview_text.tag_configure('list_item', lmargin1=20, lmargin2=40)
+        self.preview_text.tag_configure('quote', lmargin1=20, lmargin2=20, background='#252526', foreground='#cccccc')
+        self.preview_text.tag_configure('separator', spacing1=10, spacing3=10, overstrike=True)
+
+    def show_placeholder(self):
+        """Show placeholder content when no study guide is available"""
+        placeholder = """# 📚 Study Guide Preview
+
+Welcome to the Research & Study Guide Generator!
+
+1.  **Choose your source**: Scrape a URL or upload local files.
+2.  **Enable research** (optional) to find related content online.
+3.  **Configure your AI model** and prompt.
+4.  Click **"Start Generation"**.
+
+Your generated study guide will appear here with rich formatting!
+"""
+        self.update_preview(placeholder)
+
+    def update_preview(self, content):
+        self.current_content = content
+        self.refresh_preview()
+
+    def refresh_preview(self):
+        if not self.current_content: return
+        self.preview_text.config(state='normal')
+        self.preview_text.delete('1.0', tk.END)
+        if self.preview_mode.get() == "source":
+            self.preview_text.insert(tk.END, self.current_content)
+        else:
+            self.render_markdown_content(self.current_content)
+        self.preview_text.config(state='disabled')
+
+    def render_markdown_content(self, content):
+        lines = content.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            if not line: self.preview_text.insert(tk.END, '\n'); i += 1; continue
+            
+            if line.startswith('# '): self.preview_text.insert(tk.END, line[2:] + '\n', 'h1')
+            elif line.startswith('## '): self.preview_text.insert(tk.END, line[3:] + '\n', 'h2')
+            elif line.startswith('### '): self.preview_text.insert(tk.END, line[4:] + '\n', 'h3')
+            elif line.startswith('```'):
+                self.preview_text.insert(tk.END, '\n')
+                i += 1
+                code_content = [lines[i]] if i < len(lines) else []
+                while i + 1 < len(lines) and not lines[i+1].startswith('```'):
+                    i += 1
+                    code_content.append(lines[i])
+                i += 1
+                self.preview_text.insert(tk.END, '\n'.join(code_content) + '\n', 'code_block')
+                self.preview_text.insert(tk.END, '\n')
+            elif line.startswith('---') or line.startswith('==='): self.preview_text.insert(tk.END, ' ' * 80 + '\n', 'separator')
+            elif line.startswith(('* ','- ')) or re.match(r'^\d+\.\s', line): self.preview_text.insert(tk.END, '• ' + re.sub(r'^\* |^- |\d+\.\s', '', line) + '\n', 'list_item')
+            elif line.startswith('> '): self.preview_text.insert(tk.END, line[2:] + '\n', 'quote')
+            else: self.render_inline_formatting(line + '\n')
+            i += 1
+
+    def render_inline_formatting(self, text):
+        parts = re.split(r'(\*\*.*?\*\*|\*.*?\*|`.*?`)', text)
+        for part in parts:
+            if part.startswith('**') and part.endswith('**'): self.preview_text.insert(tk.END, part[2:-2], 'bold')
+            elif part.startswith('*') and part.endswith('*'): self.preview_text.insert(tk.END, part[1:-1], 'italic')
+            elif part.startswith('`') and part.endswith('`'): self.preview_text.insert(tk.END, part[1:-1], 'code_inline')
+            else: self.preview_text.insert(tk.END, part)
+
+    def switch_preview_mode(self):
+        self.refresh_preview()
+
+    def open_in_browser(self):
+        if not self.current_content: messagebox.showinfo("No Content", "No study guide to display."); return
+        try:
+            html_content = self.generate_html_content(self.current_content)
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.html', delete=False, encoding='utf-8') as f:
+                f.write(html_content)
+                temp_path = f.name
+            webbrowser.open(f'file://{os.path.abspath(temp_path)}')
+            self.master.after(5000, lambda: os.unlink(temp_path))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to open in browser:\n{e}")
+
+    def export_html(self):
+        if not self.current_content: messagebox.showinfo("No Content", "No study guide to export."); return
+        initial_filename = f"study_guide_{datetime.now().strftime('%Y%m%d_%H%M')}.html"
+        filepath = filedialog.asksaveasfilename(initialfile=initial_filename, defaultextension=".html", filetypes=[("HTML files", "*.html")])
+        if not filepath: return
+        try:
+            html_content = self.generate_html_content(self.current_content)
+            with open(filepath, 'w', encoding='utf-8') as f: f.write(html_content)
+            messagebox.showinfo("Success", f"HTML exported to:\n{filepath}")
+        except Exception as e: messagebox.showerror("Error", f"Failed to export HTML:\n{e}")
+
+    def generate_html_content(self, markdown_content):
+        if MARKDOWN_AVAILABLE:
+            html_body = self.markdown_processor.convert(markdown_content)
+        else:
+            html_body = "<pre>" + html2text.html2text(markdown_content) + "</pre>"
+        
+        return f"""<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>Study Guide</title><style>
+body{{font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 2rem auto; padding: 2rem; background-color: #1e1e1e; color: #d4d4d4;}}
+h1,h2,h3{{line-height:1.2;margin-top:1.5em;}} h1{{color:#34a853;}} h2{{color:#4285f4; border-bottom: 1px solid #444;}} h3{{color:#fbbc05;}}
+code{{background-color:#2d2d30;color:#dcdcaa;padding:.2em .4em;margin:0;font-size:.85em;border-radius:3px;font-family:monospace;}}
+pre{{background-color:#1e1e1e;border:1px solid #404040;border-radius:5px;padding:1em;overflow-x:auto;}} pre code{{background:none;padding:0;font-size:1em;}}
+blockquote{{border-left:4px solid #34a853; margin:0; padding: 0.5em 1em; color: #aaa;}} hr{{border:none;height:1px;background-color:#404040;margin:2em 0;}}
+</style></head><body>{html_body}</body></html>"""
+
+# --- END: Integrated UI Enhancement Classes ---
+
+
+# --- Backend Classes (Unchanged) ---
 class APIKeyManager:
     @staticmethod
     def get_gemini_api_key(filepath: str) -> str | None:
@@ -150,109 +373,51 @@ class GoogleSearchResearcher:
         return [url for url in list(urls) if exclude_domain not in url and not any(url.endswith(e) for e in ['.pdf', '.zip'])]
 
 class YouTubeResearcher:
-    """Performs video searches and extracts transcripts using yt-dlp's search functionality."""
     def __init__(self):
-        if not YT_DLP_AVAILABLE:
-            raise ImportError("YouTube research requires 'yt-dlp'. Please install it.")
-        logging.info("🔎 Initialized YouTube Researcher using yt-dlp search.")
-
+        if not YT_DLP_AVAILABLE: raise ImportError("YouTube research requires 'yt-dlp'.")
+        logging.info("🔎 Initialized YouTube Researcher.")
     def _extract_transcript_from_file(self, file_path: Path) -> str:
-        """Reads a .vtt file and extracts the clean text content."""
         if not file_path.exists(): return ""
         with open(file_path, 'r', encoding='utf-8') as f: content = f.read()
-        lines = content.splitlines()
-        text_lines = [line for line in lines if not line.strip().startswith('WEBVTT') and '-->' not in line and line.strip()]
-        unique_lines = [line for i, line in enumerate(text_lines) if i == 0 or line != text_lines[i-1]]
-        return " ".join(unique_lines)
-
+        lines = [line for line in content.splitlines() if not line.strip().startswith('WEBVTT') and '-->' not in line and line.strip()]
+        return " ".join(dict.fromkeys(lines))
     def download_transcript(self, video_id: str) -> Optional[str]:
-        """Downloads the english transcript for a single video ID using yt-dlp."""
         video_url = f"https://www.youtube.com/watch?v={video_id}"
         temp_dir = Path(f"./temp_subs_{video_id}_{random.randint(1000, 9999)}")
         temp_dir.mkdir(exist_ok=True)
-        
         try:
-            ydl_opts = {
-                'writesubtitles': True, 'writeautomaticsub': True,
-                'subtitleslangs': ['en', 'en-US', 'en-GB'],
-                'skip_download': True, 'outtmpl': str(temp_dir / '%(id)s'),
-                'quiet': True, 'logtostderr': False,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                ydl.download([video_url])
-
+            with yt_dlp.YoutubeDL({'writesubtitles': True, 'writeautomaticsub': True, 'subtitleslangs': ['en', 'en-US'], 'skip_download': True, 'outtmpl': str(temp_dir / '%(id)s'), 'quiet': True, 'logtostderr': False}) as ydl: ydl.download([video_url])
             subtitle_file = next(temp_dir.glob('*.vtt'), None)
-            if not subtitle_file: return None
-            
-            transcript = self._extract_transcript_from_file(subtitle_file)
-            return transcript
-        except Exception:
-            return None
+            return self._extract_transcript_from_file(subtitle_file) if subtitle_file else None
+        except Exception: return None
         finally:
             if temp_dir.exists(): shutil.rmtree(temp_dir)
-
     def get_transcripts_for_queries(self, queries: List[str], max_videos: int) -> Dict[str, str]:
-        """Searches YouTube using yt-dlp, finds unique videos, and downloads transcripts in parallel."""
         all_videos = {}
-        logging.info("▶️  Searching YouTube using yt-dlp...")
         for query in queries:
             try:
-                # Use yt-dlp's search feature to get video metadata as JSON
-                command = [
-                    "yt-dlp",
-                    "--dump-json",
-                    "--default-search", f"ytsearch{max_videos}",
-                    query
-                ]
-                
-                # Execute the command and capture output
-                result = subprocess.run(command, capture_output=True, text=True, check=True, encoding='utf-8')
-                
-                # Each line of the output is a separate JSON object for a video
-                video_metas = [json.loads(line) for line in result.stdout.strip().split('\n')]
-                
-                for meta in video_metas:
-                    video_id = meta.get('id')
-                    title = meta.get('title')
-                    # Check if subtitles are available, which is a good indicator of transcript quality
-                    if video_id and title and meta.get('subtitles'):
-                         if video_id not in all_videos:
-                            all_videos[video_id] = title
-                logging.info(f"  > Found {len(video_metas)} potential videos for query: '{query}'")
-
-            except subprocess.CalledProcessError as e:
-                logging.error(f"❌ yt-dlp search failed for query '{query}'. Error: {e.stderr}")
-            except Exception as e:
-                logging.error(f"❌ An unexpected error occurred during yt-dlp search: {e}")
-            sleep(1.0) # Be respectful to YouTube's servers
-
-        if not all_videos: 
-            logging.warning("  > No suitable videos with subtitles found from yt-dlp searches.")
-            return {}
-            
-        logging.info(f"  > Found {len(all_videos)} unique videos with subtitles. Downloading transcripts...")
-        
+                result = subprocess.run(["yt-dlp", "--dump-json", "--default-search", f"ytsearch{max_videos}", query], capture_output=True, text=True, check=True, encoding='utf-8')
+                for line in result.stdout.strip().split('\n'):
+                    meta = json.loads(line)
+                    if meta.get('id') and meta.get('title') and meta.get('subtitles'): all_videos[meta['id']] = meta['title']
+            except Exception as e: logging.error(f"❌ yt-dlp search failed for '{query}': {e}")
+            sleep(1.0)
+        if not all_videos: return {}
         transcripts = {}
         with ThreadPoolExecutor(max_workers=5) as executor:
-            future_to_id = {executor.submit(self.download_transcript, vid): vid for vid in all_videos.keys()}
+            future_to_id = {executor.submit(self.download_transcript, vid): vid for vid in all_videos}
             for future in future_to_id:
                 video_id = future_to_id[future]
                 try:
                     transcript = future.result()
-                    if transcript:
-                        logging.info(f"  > Successfully extracted transcript for video ID {video_id}.")
-                        content = f"Video Title: {all_videos[video_id]}\n\nTranscript:\n{transcript}"
-                        transcripts[f"https://www.youtube.com/watch?v={video_id}"] = content
-                except Exception as e:
-                    logging.error(f"  > Error processing future for video {video_id}: {e}")
+                    if transcript: transcripts[f"https://www.youtube.com/watch?v={video_id}"] = f"Video Title: {all_videos[video_id]}\n\nTranscript:\n{transcript}"
+                except Exception as e: logging.error(f"Error processing video {video_id}: {e}")
         return transcripts
 
 class PlaywrightResearcher:
-    """Performs searches using a real browser via Playwright."""
     def __init__(self):
         self.search_engine_url = "https://duckduckgo.com/"
         logging.info("🤖 Initialized Playwright-based researcher.")
-
     def search_and_extract_urls(self, queries: List[str], exclude_domain: str) -> List[str]:
         all_urls = set()
         with sync_playwright() as p:
@@ -264,133 +429,86 @@ class PlaywrightResearcher:
                     logging.info(f"🤖 Playwright searching [{i+1}/{len(queries)}]: {query}")
                     try:
                         page.goto(self.search_engine_url, timeout=20000)
-                        page.locator('input[name="q"]').fill(query)
-                        page.locator('input[name="q"]').press("Enter")
+                        page.locator('input[name="q"]').fill(query); page.locator('input[name="q"]').press("Enter")
                         page.wait_for_selector("div#links", timeout=15000)
                         found = {link.get_attribute('href') for link in page.locator('h2 > a').all()}
-                        useful_urls = {url for url in found if self._is_useful_url(url, exclude_domain)}
-                        all_urls.update(useful_urls)
-                        logging.info(f"✅ Playwright found {len(useful_urls)} useful URLs.")
+                        all_urls.update({url for url in found if url and exclude_domain not in url and not any(url.endswith(e) for e in ['.pdf', '.zip'])})
                         sleep(random.uniform(2.0, 4.0))
-                    except PlaywrightTimeoutError: logging.warning(f"❌ Playwright timed out on query: {query}")
-                    except Exception as e: logging.error(f"❌ Playwright search error: {e}")
-            finally:
-                browser.close()
+                    except Exception as e: logging.warning(f"❌ Playwright error on query '{query}': {e}")
+            finally: browser.close()
         return list(all_urls)
 
-    def _is_useful_url(self, url: str, domain: str) -> bool:
-         return url and domain not in url and not any(url.endswith(e) for e in ['.pdf', '.zip'])
-
 class WebsiteScraper:
-    def __init__(self, base_url: str, max_pages: int, user_agent: str, request_timeout: int, rate_limit_delay: float):
-        self.base_url = base_url
-        self.domain = urlparse(base_url).netloc
-        self.max_pages = max_pages
-        self.session = requests.Session()
-        self.session.headers.update({'User-Agent': user_agent})
-        self.request_timeout = request_timeout
-        self.rate_limit_delay = rate_limit_delay
-        self.scraped_content = {}
-        self.visited_urls = set()
-
+    def __init__(self, base_url: str, max_pages: int, user_agent: str, timeout: int, delay: float):
+        self.base_url = base_url; self.domain = urlparse(base_url).netloc; self.max_pages = max_pages
+        self.session = requests.Session(); self.session.headers.update({'User-Agent': user_agent})
+        self.timeout = timeout; self.delay = delay; self.scraped_content = {}; self.visited_urls = set()
     def _get_page_content(self, url: str) -> str | None:
         try:
-            response = self.session.get(url, timeout=self.request_timeout)
+            response = self.session.get(url, timeout=self.timeout)
             response.raise_for_status()
             if 'text/html' in response.headers.get('Content-Type', ''): return response.text
-        except requests.exceptions.RequestException as e:
-            logging.warning(f"Request failed for {url}: {e}")
+        except requests.RequestException as e: logging.warning(f"Request failed for {url}: {e}")
         return None
-
     def _parse_content_and_links(self, html: str, page_url: str) -> tuple[str, list[str]]:
         soup = BeautifulSoup(html, 'html.parser')
         for element in soup.select('script, style, nav, footer, header, aside, form, .ad'): element.decompose()
-        main_content_area = soup.select_one('main, article, [role="main"], .main-content, .content') or soup.body
+        main = soup.select_one('main, article, [role="main"], .main-content, .content') or soup.body
         text_maker = html2text.HTML2Text(); text_maker.body_width = 0; text_maker.ignore_links = True
-        markdown_content = text_maker.handle(str(main_content_area)) if main_content_area else ""
-        markdown_content = re.sub(r'\n{3,}', '\n\n', markdown_content).strip()
+        md = re.sub(r'\n{3,}', '\n\n', text_maker.handle(str(main)) if main else "").strip()
         links = {urljoin(page_url, a['href']).split('#')[0] for a in soup.find_all('a', href=True) if urlparse(urljoin(page_url, a['href'])).netloc == self.domain}
-        return markdown_content, list(links)
-    
-    # CORRECTED: Modified crawl to accept 'additional_urls'
+        return md, list(links)
     def crawl(self, additional_urls: Optional[List[str]] = None) -> dict[str, str]:
         urls_to_visit = {self.base_url}
-        # If external research URLs are provided, add them to the queue
-        if additional_urls:
-            urls_to_visit.update(additional_urls)
-            logging.info(f"Added {len(additional_urls)} external research URLs to the crawl queue.")
-
+        if additional_urls: urls_to_visit.update(additional_urls)
         while urls_to_visit:
-            # Combined the max_pages check to handle both base URL crawl and research crawl
-            if 0 < self.max_pages <= len(self.visited_urls):
-                logging.info(f"Reached scraping limit of {self.max_pages} pages.")
-                break
+            if 0 < self.max_pages <= len(self.visited_urls): logging.info(f"Reached limit of {self.max_pages} pages."); break
             url = urls_to_visit.pop()
             if url in self.visited_urls: continue
             self.visited_urls.add(url)
-            
-            # Determine if we should log as "Scraping" or "Researching"
-            log_prefix = "Researching page" if additional_urls else "Scraping"
+            log_prefix = "Researching" if additional_urls and url in additional_urls else "Scraping"
             logging.info(f"[{len(self.visited_urls)}/{self.max_pages or '∞'}] {log_prefix}: {url}")
-
             html = self._get_page_content(url)
             if html:
-                # Use a different domain check for external URLs
-                current_domain = urlparse(url).netloc
-                is_external_research = additional_urls and url in additional_urls
-                
                 text, new_links = self._parse_content_and_links(html, url)
                 if text and len(text.strip()) > 150: self.scraped_content[url] = text
-
-                # Only add new links if they are on the *original* base domain, not from external research sites
-                if not is_external_research:
-                    urls_to_visit.update(new_links)
-
-            sleep(self.rate_limit_delay)
-        logging.info(f"Crawling complete. Scraped {len(self.scraped_content)} valid pages.")
+                if not (additional_urls and url in additional_urls): urls_to_visit.update(new_links)
+            sleep(self.delay)
         return self.scraped_content
 
 class EnhancedNoteGenerator:
     def __init__(self, api_key: str, llm_config: dict, prompt_template_string: str):
         self.llm = ChatGoogleGenerativeAI(model=llm_config['model_name'], google_api_key=api_key, **llm_config['parameters'])
-        self.output_parser = StrOutputParser()
         self.prompt = ChatPromptTemplate.from_template(prompt_template_string)
-
+        self.chain = self.prompt | self.llm | StrOutputParser()
     def generate_comprehensive_notes(self, source_data: dict[str, str], source_name: str) -> str:
-        if not source_data: return "No content was provided to generate notes."
+        if not source_data: return "No content provided."
         logging.info(f"Generating notes from {len(source_data)} sources...")
-        full_content = ""
-        for name, text in source_data.items():
-            full_content += f"\n\n--- SOURCE: {name} ---\n{text}"
-        chain = self.prompt | self.llm | self.output_parser
-        try:
-            notes = chain.invoke({"content": full_content, "website_url": source_name})
-            return notes
+        full_content = "".join(f"\n\n--- SOURCE: {name} ---\n{text}" for name, text in source_data.items())
+        try: return self.chain.invoke({"content": full_content, "website_url": source_name})
         except Exception as e:
             logging.error(f"Error during note generation: {e}")
-            return f"# Generation Error\n\nAn error occurred while communicating with the AI model:\n\n`{e}`"
+            return f"# Generation Error\nAn error occurred: `{e}`"
 
 # --- GUI Application ---
-
 class QueueHandler(logging.Handler):
-    """Class to send logging records to a queue."""
-    def __init__(self, log_queue):
-        super().__init__()
-        self.log_queue = log_queue
-
-    def emit(self, record):
-        self.log_queue.put(self.format(record))
+    def __init__(self, log_queue): super().__init__(); self.log_queue = log_queue
+    def emit(self, record): self.log_queue.put(self.format(record))
 
 class AdvancedScraperApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Research & Study Guide Generator (Alpha)")
-        self.root.geometry("1000x800")
+        self.root.title("Research & Study Guide Generator")
+        self.root.geometry("1200x800")
+        self.root.minsize(1000, 700)
+        
+        # --- Apply Dark Theme ---
+        DarkThemeManager.configure_dark_theme(self.root)
 
         # --- TKINTER VARIABLES ---
         self.input_mode_var = tk.StringVar(value="scrape")
         self.url_var = tk.StringVar()
-        self.limit_var = tk.IntVar(value=0) # Default value
+        self.limit_var = tk.IntVar(value=5)
         self.research_enabled_var = tk.BooleanVar(value=False)
         self.web_research_enabled_var = tk.BooleanVar(value=True)
         self.yt_research_enabled_var = tk.BooleanVar(value=False)
@@ -404,23 +522,31 @@ class AdvancedScraperApp:
         self.temperature_var = tk.DoubleVar()
         self.max_tokens_var = tk.IntVar()
         self.final_notes_content = ""
-        self.config = {} # To store loaded config
+        self.config = {}
 
-        # --- UI AND LOGGING SETUP ---
         self.create_widgets()
-        self.load_initial_settings() # Load settings from config.yml
+        self.load_initial_settings()
         self.toggle_input_mode()
         self.toggle_research_panel()
 
     def create_widgets(self):
         main_frame = ttk.Frame(self.root, padding="10"); main_frame.pack(fill=tk.BOTH, expand=True)
         settings_pane = ttk.Frame(main_frame, width=400); settings_pane.pack(side=tk.LEFT, fill=tk.Y, padx=(0, 10))
-        log_pane = ttk.Frame(main_frame); log_pane.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
-        notebook = ttk.Notebook(settings_pane); notebook.pack(fill="both", expand=True)
+        
+        # --- MODIFIED: Right pane is now a notebook for preview and logs ---
+        content_pane = ttk.Notebook(main_frame); content_pane.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
 
+        self.preview_widget = MarkdownPreviewWidget(content_pane)
+        log_frame = ttk.Frame(content_pane) # Frame to hold the log widget
+        
+        content_pane.add(self.preview_widget, text="📖 Study Guide Preview")
+        content_pane.add(log_frame, text="📋 Process Logs")
+        
+        # --- END MODIFICATION ---
+
+        notebook = ttk.Notebook(settings_pane); notebook.pack(fill="both", expand=True)
         source_tab, self.research_tab, ai_tab, prompt_tab = ttk.Frame(notebook, padding=10), ttk.Frame(notebook, padding=10), ttk.Frame(notebook, padding=10), ttk.Frame(notebook, padding=10)
         
-        # --- Tab 1: Source ---
         mode_frame = ttk.LabelFrame(source_tab, text="Input Mode", padding=10); mode_frame.pack(fill=tk.X)
         ttk.Radiobutton(mode_frame, text="Scrape from URL", variable=self.input_mode_var, value="scrape", command=self.toggle_input_mode).pack(anchor=tk.W)
         ttk.Radiobutton(mode_frame, text="Upload Local Documents", variable=self.input_mode_var, value="upload", command=self.toggle_input_mode).pack(anchor=tk.W)
@@ -435,12 +561,10 @@ class AdvancedScraperApp:
         ttk.Button(btn_frame, text="Clear List", command=self.clear_files).pack(side=tk.RIGHT, expand=True, fill=tk.X)
         self.file_listbox = tk.Listbox(self.upload_frame, height=4); self.file_listbox.pack(fill=tk.X, pady=5)
         
-        # --- Tab 2: Research ---
         master_frame = ttk.LabelFrame(self.research_tab, text="Master Control", padding=5); master_frame.pack(fill=tk.X, pady=(0, 10))
         ttk.Checkbutton(master_frame, text="Enable AI Research (Alpha)", variable=self.research_enabled_var, command=self.toggle_research_panel).pack(anchor=tk.W)
         self.web_research_panel = ttk.LabelFrame(self.research_tab, text="Web Research", padding=10); self.web_research_panel.pack(fill=tk.X, pady=5)
         ttk.Checkbutton(self.web_research_panel, text="Enable Web Search", variable=self.web_research_enabled_var).pack(anchor=tk.W)
-        ttk.Label(self.web_research_panel, text="Method:").pack(anchor=tk.W, pady=(5,0))
         self.g_api_radio = ttk.Radiobutton(self.web_research_panel, text="Google API / DDG (Fast)", variable=self.web_research_method_var, value="google_api"); self.g_api_radio.pack(anchor=tk.W, padx=10)
         self.playwright_radio = ttk.Radiobutton(self.web_research_panel, text="Playwright (Slow, Robust)", variable=self.web_research_method_var, value="playwright"); self.playwright_radio.pack(anchor=tk.W, padx=10)
         ttk.Label(self.web_research_panel, text="Research Pages to Scrape:").pack(anchor=tk.W, pady=(5,0))
@@ -450,7 +574,6 @@ class AdvancedScraperApp:
         ttk.Label(self.yt_research_panel, text="Videos to Check per Query:").pack(anchor=tk.W, pady=(5,0))
         ttk.Spinbox(self.yt_research_panel, from_=1, to=10, textvariable=self.yt_videos_per_query_var).pack(fill=tk.X, padx=10)
         
-        # --- Tab 3: AI Model ---
         ttk.Label(ai_tab, text="Gemini API Key File:").pack(fill=tk.X, pady=(0, 2))
         api_frame = ttk.Frame(ai_tab); api_frame.pack(fill=tk.X)
         ttk.Entry(api_frame, textvariable=self.api_key_file_var).pack(side=tk.LEFT, expand=True, fill=tk.X)
@@ -462,19 +585,21 @@ class AdvancedScraperApp:
         ttk.Label(ai_tab, text="Max Output Tokens:").pack(fill=tk.X, pady=(10, 2))
         ttk.Spinbox(ai_tab, from_=1024, to=16384, increment=128, textvariable=self.max_tokens_var).pack(fill=tk.X)
 
-        # --- Tab 4: Prompt ---
         ttk.Button(prompt_tab, text="Load Prompt from File...", command=self.load_prompt_from_file).pack(fill=tk.X, pady=(0,5))
         self.prompt_text = scrolledtext.ScrolledText(prompt_tab, wrap=tk.WORD, height=10); self.prompt_text.pack(fill=tk.BOTH, expand=True)
+        DarkThemeManager.configure_text_widget(self.prompt_text) # Apply dark theme to prompt editor
 
-        notebook.add(source_tab, text="1. Source")
-        notebook.add(self.research_tab, text="2. Research (Alpha)")
-        notebook.add(ai_tab, text="3. AI Model")
-        notebook.add(prompt_tab, text="4. Prompt")
+        notebook.add(source_tab, text="Source")
+        notebook.add(self.research_tab, text="Research")
+        notebook.add(ai_tab, text="AI Model")
+        notebook.add(prompt_tab, text="Prompt")
 
-        self.start_button = ttk.Button(settings_pane, text="Start Generation", command=self.start_task_thread); self.start_button.pack(fill=tk.X, pady=(10, 0))
+        self.start_button = ttk.Button(settings_pane, text="Start Generation", command=self.start_task_thread, style="Accent.TButton"); self.start_button.pack(fill=tk.X, pady=(10, 0), ipady=5)
         self.save_button = ttk.Button(settings_pane, text="Save Study Guide As...", command=self.save_notes, state=tk.DISABLED); self.save_button.pack(fill=tk.X, pady=5)
-        log_label = ttk.LabelFrame(log_pane, text="Logs"); log_label.pack(fill=tk.BOTH, expand=True)
-        self.log_text_widget = scrolledtext.ScrolledText(log_label, state='disabled', wrap=tk.WORD); self.log_text_widget.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.log_text_widget = scrolledtext.ScrolledText(log_frame, state='disabled', wrap=tk.WORD); self.log_text_widget.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        DarkThemeManager.configure_text_widget(self.log_text_widget) # Apply dark theme to log widget
+
         self.log_queue = queue.Queue(); self.queue_handler = QueueHandler(self.log_queue)
         logging.getLogger().addHandler(self.queue_handler); logging.getLogger().setLevel(logging.INFO)
         self.root.after(100, self.poll_log_queue)
@@ -483,29 +608,22 @@ class AdvancedScraperApp:
         for widget in parent.winfo_children():
             try: widget.configure(state=state)
             except tk.TclError: pass
-            self._set_child_widgets_state(widget, state)
+            if isinstance(widget, (ttk.Frame, ttk.LabelFrame)): self._set_child_widgets_state(widget, state)
 
     def toggle_input_mode(self):
-        mode = self.input_mode_var.get()
-        if mode == "scrape":
-            self._set_child_widgets_state(self.scraper_frame, tk.NORMAL)
-            self._set_child_widgets_state(self.upload_frame, tk.DISABLED)
-        else:
-            self._set_child_widgets_state(self.scraper_frame, tk.DISABLED)
-            self._set_child_widgets_state(self.upload_frame, tk.NORMAL)
+        is_scrape = self.input_mode_var.get() == "scrape"
+        self._set_child_widgets_state(self.scraper_frame, tk.NORMAL if is_scrape else tk.DISABLED)
+        self._set_child_widgets_state(self.upload_frame, tk.DISABLED if is_scrape else tk.NORMAL)
 
     def add_files(self):
-        filetypes = [("All Supported", "*.pdf *.docx *.txt"), ("PDF", "*.pdf"), ("Word", "*.docx"), ("Text", "*.txt")]
-        files = filedialog.askopenfilenames(title="Select Documents", filetypes=filetypes)
+        files = filedialog.askopenfilenames(title="Select Documents", filetypes=[("All Supported", "*.pdf *.docx *.txt")])
         for f in files:
             if f not in self.file_listbox.get(0, tk.END): self.file_listbox.insert(tk.END, f)
     
     def clear_files(self): self.file_listbox.delete(0, tk.END)
-    
     def browse_api_key(self):
         filepath = filedialog.askopenfilename(title="Select Gemini API Key File");
         if filepath: self.api_key_file_var.set(filepath)
-    
     def load_prompt_from_file(self):
         filepath = filedialog.askopenfilename(title="Select Prompt File", filetypes=[("Markdown", "*.md"), ("Text", "*.txt")])
         if filepath:
@@ -520,44 +638,28 @@ class AdvancedScraperApp:
         if not YT_DLP_AVAILABLE: self.yt_checkbutton.config(state=tk.DISABLED)
 
     def load_initial_settings(self):
-        """Loads settings from config.yml and prompt.md into the UI."""
         self.config = self._load_config_file()
         prompt_template = self._load_prompt_file()
-        
         if self.config:
             logging.info("📝 Loading settings from config.yml...")
-            api_settings = self.config.get('api', {})
-            llm_settings = self.config.get('llm', {})
+            api_settings, llm_settings = self.config.get('api', {}), self.config.get('llm', {})
             llm_params = llm_settings.get('parameters', {})
-            
             self.api_key_file_var.set(api_settings.get('key_file', 'gemini_api.key'))
             self.model_name_var.set(llm_settings.get('model_name', 'gemini-1.5-flash'))
             self.temperature_var.set(llm_params.get('temperature', 0.5))
             self.max_tokens_var.set(llm_params.get('max_output_tokens', 8192))
-            
-            # Load Google API settings for research tab
             google_search_settings = api_settings.get('google_search', {})
             self.google_api_key_file_var.set(google_search_settings.get('key_file', 'google_api.key'))
             self.google_cx_file_var.set(google_search_settings.get('cx_file', 'google_cx.key'))
-
             logging.info("✅ Default settings loaded.")
-        else:
-            logging.warning("Could not find or load config.yml. Using default fallback values.")
-
         if prompt_template:
-            self.prompt_text.delete("1.0", tk.END)
-            self.prompt_text.insert(tk.END, prompt_template)
+            self.prompt_text.delete("1.0", tk.END); self.prompt_text.insert(tk.END, prompt_template)
             logging.info("✅ Default prompt loaded from prompt.md.")
-        
-        # Check for dependencies
         if not PLAYWRIGHT_AVAILABLE:
             self.playwright_radio.config(state=tk.DISABLED)
-            logging.warning("Playwright not found. To enable, 'pip install playwright' and 'playwright install'.")
             if self.web_research_method_var.get() == 'playwright': self.web_research_method_var.set('google_api')
         if not YT_DLP_AVAILABLE:
-            self.yt_checkbutton.config(state=tk.DISABLED)
-            self.yt_research_enabled_var.set(False)
-            logging.warning("yt-dlp not found. To enable YouTube research, 'pip install yt-dlp'.")
+            self.yt_checkbutton.config(state=tk.DISABLED); self.yt_research_enabled_var.set(False)
 
     def poll_log_queue(self):
         while True:
@@ -582,86 +684,61 @@ class AdvancedScraperApp:
     def start_task_thread(self):
         self.start_button.config(state=tk.DISABLED); self.save_button.config(state=tk.DISABLED)
         self.final_notes_content = ""
+        # Clear preview and logs before starting
+        self.preview_widget.update_preview("")
+        self.log_text_widget.config(state='normal'); self.log_text_widget.delete('1.0', tk.END); self.log_text_widget.config(state='disabled')
         threading.Thread(target=self.run_full_process, daemon=True).start()
 
     def run_full_process(self):
         try:
-            api_key_file = self.api_key_file_var.get(); model_name = self.model_name_var.get(); prompt = self.prompt_text.get("1.0", tk.END).strip()
-            if not all([api_key_file, model_name, prompt]):
-                messagebox.showerror("Input Error", "API Key File, Model, and Prompt must be set."); return
-            
-            api_key = APIKeyManager.get_gemini_api_key(api_key_file)
-            if not api_key: 
-                logging.error("API Key is invalid. Halting.")
-                messagebox.showerror("API Key Error", "The Gemini API key is missing or invalid.")
-                return
+            api_key = APIKeyManager.get_gemini_api_key(self.api_key_file_var.get())
+            if not api_key: messagebox.showerror("API Key Error", "The Gemini API key is missing or invalid."); return
 
             source_data, source_name, mode = {}, "", self.input_mode_var.get()
-            delay = self.config.get('scraper', {}).get('rate_limit_delay', 0.5)
-            user_agent = random.choice(USER_AGENTS)
+            scraper_config = self.config.get('scraper', {})
             
             if mode == "scrape":
-                logging.info("--- Starting in Web Scrape Mode ---")
-                url = self.url_var.get()
+                url = self.url_var.get();
                 if not url: messagebox.showerror("Input Error", "URL cannot be empty."); return
-                limit = self.limit_var.get()
-                scraper = WebsiteScraper(url, limit, user_agent, 15, delay)
+                scraper = WebsiteScraper(url, self.limit_var.get(), random.choice(USER_AGENTS), 15, scraper_config.get('rate_limit_delay', 0.5))
                 source_data = scraper.crawl()
                 source_name = urlparse(url).netloc
-            else: # "upload"
-                logging.info("--- Starting in Local Document Mode ---")
+            else:
                 file_paths = self.file_listbox.get(0, tk.END)
                 if not file_paths: messagebox.showerror("Input Error", "Please add at least one document."); return
-                loader = LocalDocumentLoader(file_paths)
-                source_data = loader.load_and_extract_text()
-                source_name = f"{len(file_paths)}_local_documents"
+                source_data = LocalDocumentLoader(file_paths).load_and_extract_text()
+                source_name = f"{len(file_paths)} local documents"
 
-            if not source_data:
-                logging.warning("No text content could be extracted from the initial source. Halting process."); return
+            if not source_data: logging.warning("No text extracted from initial source. Halting."); return
 
             if self.research_enabled_var.get():
-                logging.info("--- Starting Research Phase ---")
                 query_generator = ResearchQueryGenerator(api_key)
                 main_topic = query_generator.extract_main_topic(source_data)
-                research_queries = query_generator.generate_research_queries(main_topic, 5) # Generate 5 queries
+                research_queries = query_generator.generate_research_queries(main_topic, 5)
 
                 if self.web_research_enabled_var.get():
-                    logging.info("--- Starting Web Research ---")
-                    if self.web_research_method_var.get() == "playwright":
-                        researcher = PlaywrightResearcher()
+                    if self.web_research_method_var.get() == "playwright": researcher = PlaywrightResearcher()
                     else:
-                        google_api_key, google_cx = APIKeyManager.get_google_search_credentials(self.google_api_key_file_var.get(), self.google_cx_file_var.get())
-                        researcher = GoogleSearchResearcher(google_api_key, google_cx)
-                    
-                    exclude_domain_from_research = source_name if mode == "scrape" else ""
-                    research_urls = researcher.search_and_extract_urls(research_queries, exclude_domain_from_research)
-                    
+                        g_key, g_cx = APIKeyManager.get_google_search_credentials(self.google_api_key_file_var.get(), self.google_cx_file_var.get())
+                        researcher = GoogleSearchResearcher(g_key, g_cx)
+                    research_urls = researcher.search_and_extract_urls(research_queries, source_name if mode == "scrape" else "")
                     if research_urls:
-                        # Use only the top N research URLs based on the UI setting
                         urls_to_scrape = research_urls[:self.research_pages_var.get()]
-                        logging.info(f"--- Found {len(research_urls)} web pages, will scrape the top {len(urls_to_scrape)}... ---")
-                        
-                        # The base_url for the research scraper doesn't matter as we provide direct URLs
-                        research_scraper = WebsiteScraper("http://research.local", len(urls_to_scrape), user_agent, 15, delay)
-                        research_data = research_scraper.crawl(additional_urls=urls_to_scrape)
-                        source_data.update(research_data)
+                        research_scraper = WebsiteScraper("http://research.local", len(urls_to_scrape), random.choice(USER_AGENTS), 15, scraper_config.get('rate_limit_delay', 0.5))
+                        source_data.update(research_scraper.crawl(additional_urls=urls_to_scrape))
 
                 if self.yt_research_enabled_var.get():
-                    logging.info("--- Starting YouTube Research ---")
-                    yt_researcher = YouTubeResearcher()
-                    video_transcripts = yt_researcher.get_transcripts_for_queries(research_queries, self.yt_videos_per_query_var.get())
-                    if video_transcripts:
-                        source_data.update(video_transcripts)
-                        logging.info(f"--- Added {len(video_transcripts)} YouTube transcripts. ---")
+                    source_data.update(YouTubeResearcher().get_transcripts_for_queries(research_queries, self.yt_videos_per_query_var.get()))
 
-            llm_config = {'model_name': model_name, 'parameters': {'temperature': self.temperature_var.get(), 'max_output_tokens': self.max_tokens_var.get()}}
-            generator = EnhancedNoteGenerator(api_key, llm_config, prompt)
+            llm_config = {'model_name': self.model_name_var.get(), 'parameters': {'temperature': self.temperature_var.get(), 'max_output_tokens': self.max_tokens_var.get()}}
+            generator = EnhancedNoteGenerator(api_key, llm_config, self.prompt_text.get("1.0", tk.END).strip())
             self.final_notes_content = generator.generate_comprehensive_notes(source_data, source_name)
             
+            # --- MODIFIED: Update the preview widget ---
+            self.root.after(0, self.preview_widget.update_preview, self.final_notes_content)
+            
             logging.info("--- Study Guide Generation Complete! ---")
-            logging.info("Ready to save the file.")
             self.save_button.config(state=tk.NORMAL)
-
         except Exception as e:
             logging.error(f"An unexpected error occurred: {e}", exc_info=True)
             messagebox.showerror("Runtime Error", f"An error occurred:\n\n{e}")
@@ -669,22 +746,14 @@ class AdvancedScraperApp:
             self.start_button.config(state=tk.NORMAL)
             
     def _load_config_file(self, filepath="config.yml"):
-        """Loads configuration from a YAML file."""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return yaml.safe_load(f)
+            with open(filepath, 'r', encoding='utf-8') as f: return yaml.safe_load(f)
         except (FileNotFoundError, yaml.YAMLError) as e:
-            logging.warning(f"Could not load or parse '{filepath}': {e}")
-            return {}
-        
+            logging.warning(f"Could not load '{filepath}': {e}"); return {}
     def _load_prompt_file(self, filepath="prompt.md"):
-        """Loads a text or markdown file."""
         try:
-            with open(filepath, 'r', encoding='utf-8') as f:
-                return f.read()
-        except FileNotFoundError:
-            logging.warning(f"Prompt file not found at '{filepath}'. Prompt will be empty.")
-            return ""
+            with open(filepath, 'r', encoding='utf-8') as f: return f.read()
+        except FileNotFoundError: return ""
 
 if __name__ == '__main__':
     root = tk.Tk()
